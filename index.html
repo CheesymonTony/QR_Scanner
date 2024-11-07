@@ -43,7 +43,7 @@
     let scanSuccessful = false;
 
     function onScanSuccess(decodedText) {
-      if (!scanSuccessful && decodedText.includes("@")) {
+      if (!scanSuccessful) {
         scanSuccessful = true;
 
         // Hide the QR reader and show success message and retry button

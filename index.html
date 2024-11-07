@@ -14,11 +14,14 @@
 
   <script>
     const emailList = document.getElementById("email-list");
-    const scriptURL = "https://script.google.com/macros/s/AKfycbyjgl0GK1AqZTxhgiq4H077dmVW9jlgC_ruTyu8Z8V8LVXbJEDIXaTluG12UJ5fG4AR/exec"; // Replace with your Apps Script URL
+    const scriptURL = "https://script.google.com/macros/s/AKfycbyjgl0GK1AqZTxhgiq4H077dmVW9jlgC_ruTyu8Z8V8LVXbJEDIXaTluG12UJ5fG4AR/exec"; // Replace with your actual Apps Script URL
+    let scanSuccessful = false;  // Flag to stop scanning after first capture
 
     function onScanSuccess(decodedText) {
-      if (decodedText.includes("@")) {
-        // Append to list in the web app
+      if (!scanSuccessful && decodedText.includes("@")) {
+        scanSuccessful = true;  // Mark as successful to stop further scans
+
+        // Append email to the list in the web app
         const li = document.createElement("li");
         li.textContent = decodedText;
         emailList.appendChild(li);
@@ -29,17 +32,30 @@
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({ email: decodedText })
         })
-        .then(response => console.log("Email added to Google Sheetss"))
+        .then(response => console.log("Email added to Google Sheets"))
         .catch(error => console.error("Error!", error.message));
+
+        // Stop the QR scanner
+        qrCodeScanner.stop().then(() => {
+          console.log("QR scanner stopped after successful capture.");
+        }).catch(error => console.error("Error stopping QR scanner:", error));
       }
     }
 
+    function onScanError(errorMessage) {
+      if (!scanSuccessful) {
+        console.log("QR Code scan error:", errorMessage);
+      }
+    }
+
+    // Initialize the QR Code scanner
     const qrCodeScanner = new Html5Qrcode("qr-reader");
     qrCodeScanner.start(
       { facingMode: "environment" },
       { fps: 10, qrbox: { width: 250, height: 250 } },
-      onScanSuccess
-    );
+      onScanSuccess,
+      onScanError
+    ).catch(error => console.error("Failed to start QR scanner:", error));
   </script>
 </body>
 </html>

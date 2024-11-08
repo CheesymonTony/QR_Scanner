@@ -79,11 +79,18 @@
       document.getElementById("retry-button").style.display = "none";
       document.getElementById("qr-reader").style.display = "block";
 
-      // Start the QR Code scanner
+      // Start the QR Code scanner with higher resolution and simulated zoom
       qrCodeScanner = new Html5Qrcode("qr-reader");
       qrCodeScanner.start(
         { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
+        {
+          fps: 10,
+          qrbox: { width: 200, height: 200 }, // Smaller scan area to simulate zoom
+          videoConstraints: {
+            width: { ideal: 1920 },  // High resolution
+            height: { ideal: 1080 }  // High resolution
+          }
+        },
         onScanSuccess,
         onScanError
       ).catch(error => console.error("Failed to start QR scanner:", error));

@@ -33,6 +33,9 @@
 </head>
 <body>
   <h2>Scan QR Code to Capture Email</h2>
+  
+  <select id="camera-select" style="margin-bottom: 10px;"></select> <!-- Camera selection dropdown -->
+  
   <div id="qr-reader"></div>
   <div id="capture-message" style="display: none;">Capture Successful!</div>
   <button id="retry-button" style="display: none;" onclick="startScanner()">Capture Another</button>
@@ -79,12 +82,13 @@
       document.getElementById("retry-button").style.display = "none";
       document.getElementById("qr-reader").style.display = "block";
 
-      // Start the QR Code scanner with rear camera preference and high resolution
+      // Get selected camera ID
+      const selectedCameraId = document.getElementById("camera-select").value;
+
+      // Start the QR Code scanner with the selected camera
       qrCodeScanner = new Html5Qrcode("qr-reader");
       qrCodeScanner.start(
-        { 
-          facingMode: "environment" // Prioritize rear camera without strict enforcement
-        },
+        { deviceId: { exact: selectedCameraId } },
         {
           fps: 10,
           qrbox: { width: 200, height: 200 }, // Smaller scan area to simulate zoom
@@ -98,8 +102,24 @@
       ).catch(error => console.error("Failed to start QR scanner:", error));
     }
 
-    // Initialize scanner on page load
-    window.onload = startScanner;
+    function loadCameras() {
+      Html5Qrcode.getCameras().then(devices => {
+        const cameraSelect = document.getElementById("camera-select");
+
+        devices.forEach(device => {
+          const option = document.createElement("option");
+          option.value = device.id;
+          option.text = device.label || `Camera ${cameraSelect.length + 1}`;
+          cameraSelect.appendChild(option);
+        });
+
+        // Start scanner with the selected camera when dropdown is populated
+        startScanner();
+      }).catch(error => console.error("Error getting cameras:", error));
+    }
+
+    // Initialize camera list and scanner on page load
+    window.onload = loadCameras;
   </script>
 </body>
 </html>

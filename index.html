@@ -33,9 +33,6 @@
 </head>
 <body>
   <h2>Scan QR Code to Capture Email</h2>
-  
-  <select id="camera-select" style="margin-bottom: 10px;" onchange="switchCamera()"></select> <!-- Camera selection dropdown -->
-  
   <div id="qr-reader"></div>
   <div id="capture-message" style="display: none;">Capture Successful!</div>
   <button id="retry-button" style="display: none;" onclick="startScanner()">Capture Another</button>
@@ -76,58 +73,24 @@
       }
     }
 
-    function startScanner(cameraId) {
+    function startScanner() {
       scanSuccessful = false;
       document.getElementById("capture-message").style.display = "none";
       document.getElementById("retry-button").style.display = "none";
       document.getElementById("qr-reader").style.display = "block";
 
-      // Initialize QR Code scanner with the selected camera
+      // Start the QR Code scanner
       qrCodeScanner = new Html5Qrcode("qr-reader");
       qrCodeScanner.start(
-        { deviceId: { exact: cameraId } },
-        {
-          fps: 10,
-          qrbox: { width: 200, height: 200 }, // Smaller scan area to simulate zoom
-          videoConstraints: {
-            width: { ideal: 1920 },  // High resolution
-            height: { ideal: 1080 }
-          }
-        },
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
         onScanSuccess,
         onScanError
       ).catch(error => console.error("Failed to start QR scanner:", error));
     }
 
-    function switchCamera() {
-      if (qrCodeScanner) {
-        qrCodeScanner.stop().then(() => {
-          const selectedCameraId = document.getElementById("camera-select").value;
-          startScanner(selectedCameraId);
-        }).catch(error => console.error("Error stopping QR scanner:", error));
-      }
-    }
-
-    function loadCameras() {
-      Html5Qrcode.getCameras().then(devices => {
-        const cameraSelect = document.getElementById("camera-select");
-
-        devices.forEach(device => {
-          const option = document.createElement("option");
-          option.value = device.id;
-          option.text = device.label || `Camera ${cameraSelect.length + 1}`;
-          cameraSelect.appendChild(option);
-        });
-
-        // Start scanner with the first camera by default
-        if (devices.length > 0) {
-          startScanner(devices[0].id);
-        }
-      }).catch(error => console.error("Error getting cameras:", error));
-    }
-
-    // Initialize camera list and scanner on page load
-    window.onload = loadCameras;
+    // Initialize scanner on page load
+    window.onload = startScanner;
   </script>
 </body>
 </html>

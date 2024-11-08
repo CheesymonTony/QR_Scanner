@@ -79,17 +79,19 @@
       document.getElementById("retry-button").style.display = "none";
       document.getElementById("qr-reader").style.display = "block";
 
-      // Start the QR Code scanner with higher resolution and simulated zoom
+      // Start the QR Code scanner with higher resolution and enforce rear camera
       qrCodeScanner = new Html5Qrcode("qr-reader");
       qrCodeScanner.start(
-        { facingMode: "environment" },
+        { 
+          videoConstraints: {
+            facingMode: { exact: "environment" }, // Enforces rear camera
+            width: { ideal: 1920 },               // High resolution
+            height: { ideal: 1080 }
+          }
+        },
         {
           fps: 10,
-          qrbox: { width: 200, height: 200 }, // Smaller scan area to simulate zoom
-          videoConstraints: {
-            width: { ideal: 1920 },  // High resolution
-            height: { ideal: 1080 }  // High resolution
-          }
+          qrbox: { width: 200, height: 200 } // Smaller scan area to simulate zoom
         },
         onScanSuccess,
         onScanError

@@ -51,6 +51,7 @@
     // ---- Fill these in from your Google Cloud project ----
     const CLIENT_ID = "1095889947363-9sn265jhc224v6qicpfahfdh160018j0.apps.googleusercontent.com";
     const API_KEY = "AIzaSyBgO288xQACOzklSQ3Z7OZ9y0xRMqIP9qE";
+    const APP_ID = "1095889947363"; // Cloud project number
     // ------------------------------------------------------
 
     const SCOPE = "https://www.googleapis.com/auth/drive.file";
@@ -140,6 +141,7 @@
         const picker = new google.picker.PickerBuilder()
           .setOAuthToken(accessToken)
           .setDeveloperKey(API_KEY)
+          .setAppId(APP_ID)
           .addView(view)
           .setCallback((data) => {
             if (data.action !== google.picker.Action.PICKED) return;

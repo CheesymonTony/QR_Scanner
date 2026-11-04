@@ -4,93 +4,228 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>QR Code Email Capture</title>
-  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode/minified/html5-qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
   <style>
-    /* Basic styling for mobile-friendly view */
     body {
       font-family: Arial, sans-serif;
       display: flex;
       flex-direction: column;
       align-items: center;
       padding: 20px;
+      max-width: 520px;
+      margin: 0 auto;
     }
-    #qr-reader {
+    #qr-reader { width: 100%; max-width: 300px; margin: 20px 0; }
+    #capture-message { font-size: 1.2em; color: green; margin-top: 15px; }
+    button { padding: 10px 20px; font-size: 1em; margin-top: 12px; }
+    #sheet-bar {
       width: 100%;
-      max-width: 300px;
-      margin: 20px 0;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 12px;
+      box-sizing: border-box;
+      text-align: center;
     }
-    #capture-message {
-      font-size: 1.2em;
-      color: green;
-      margin-top: 15px;
-    }
-    button {
-      padding: 10px 20px;
-      font-size: 1em;
-      margin-top: 20px;
-    }
+    #sheet-name { font-weight: bold; }
+    .muted { color: #666; font-size: 0.9em; }
+    #error { color: #b00; margin-top: 12px; }
   </style>
 </head>
 <body>
   <h2>Scan QR Code to Capture Email</h2>
+
+  <div id="sheet-bar">
+    <div>Saving to: <span id="sheet-name">no sheet chosen yet</span></div>
+    <button id="choose-button">Choose Google Sheet</button>
+    <div class="muted">You'll sign in with Google and pick a sheet from your Drive.</div>
+  </div>
+
   <div id="qr-reader"></div>
   <div id="capture-message" style="display: none;">Capture Successful!</div>
-  <button id="retry-button" style="display: none;" onclick="startScanner()">Capture Another</button>
+  <button id="retry-button" style="display: none;">Capture Another</button>
+  <div id="error"></div>
 
   <script>
-    const scriptURL = "https://script.google.com/macros/s/AKfycbyjgl0GK1AqZTxhgiq4H077dmVW9jlgC_ruTyu8Z8V8LVXbJEDIXaTluG12UJ5fG4AR/exec"; // Replace with your actual Apps Script URL
-    let qrCodeScanner;
+    // ---- Fill these in from your Google Cloud project ----
+    const CLIENT_ID = "1095889947363-9sn265jhc224v6qicpfahfdh160018j0.apps.googleusercontent.com";
+    const API_KEY = "AIzaSyBgO288xQACOzklSQ3Z7OZ9y0xRMqIP9qE";
+    // ------------------------------------------------------
+
+    const SCOPE = "https://www.googleapis.com/auth/drive.file";
+
+    let tokenClient = null;
+    let accessToken = null;
+    let pickerReady = false;
+    let qrCodeScanner = null;
     let scanSuccessful = false;
 
+    let sheet = JSON.parse(localStorage.getItem("qrSheet") || "null");
+
+    const $ = (id) => document.getElementById(id);
+
+    function showError(msg) {
+      $("error").textContent = msg || "";
+    }
+
+    function renderSheet() {
+      $("sheet-name").textContent = sheet ? sheet.name : "no sheet chosen yet";
+      $("choose-button").textContent = sheet ? "Change Sheet" : "Choose Google Sheet";
+    }
+
+    // --- Google auth ---
+
+    function initTokenClient() {
+      if (tokenClient || !window.google || !google.accounts) return;
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPE,
+        callback: (resp) => {
+          if (resp.error) {
+            showError("Sign-in failed: " + resp.error);
+            return;
+          }
+          accessToken = resp.access_token;
+          if (pendingAction) {
+            const action = pendingAction;
+            pendingAction = null;
+            action();
+          }
+        }
+      });
+    }
+
+    let pendingAction = null;
+
+    function withToken(action) {
+      initTokenClient();
+      if (!tokenClient) {
+        showError("Google sign-in is still loading. Try again in a moment.");
+        return;
+      }
+      if (accessToken) {
+        action();
+      } else {
+        pendingAction = action;
+        tokenClient.requestAccessToken({ prompt: "" });
+      }
+    }
+
+    function forceReauth(action) {
+      accessToken = null;
+      pendingAction = action;
+      initTokenClient();
+      tokenClient.requestAccessToken({ prompt: "consent" });
+    }
+
+    // --- Picker ---
+
+    function loadPicker(cb) {
+      if (pickerReady) { cb(); return; }
+      if (!window.gapi) {
+        showError("Google Picker is still loading. Try again in a moment.");
+        return;
+      }
+      gapi.load("picker", () => { pickerReady = true; cb(); });
+    }
+
+    function openPicker() {
+      showError("");
+      withToken(() => loadPicker(() => {
+        const view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS)
+          .setIncludeFolders(true)
+          .setSelectFolderEnabled(false);
+
+        const picker = new google.picker.PickerBuilder()
+          .setOAuthToken(accessToken)
+          .setDeveloperKey(API_KEY)
+          .addView(view)
+          .setCallback((data) => {
+            if (data.action !== google.picker.Action.PICKED) return;
+            const doc = data.docs[0];
+            sheet = { id: doc.id, name: doc.name };
+            localStorage.setItem("qrSheet", JSON.stringify(sheet));
+            renderSheet();
+          })
+          .build();
+
+        picker.setVisible(true);
+      }));
+    }
+
+    // --- Writing a row ---
+
+    function appendRow(email, isRetry) {
+      const url = "https://sheets.googleapis.com/v4/spreadsheets/" +
+        encodeURIComponent(sheet.id) +
+        "/values/A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS";
+
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + accessToken,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ values: [[new Date().toISOString(), email]] })
+      })
+      .then((res) => {
+        if (res.status === 401 && !isRetry) {
+          forceReauth(() => appendRow(email, true));
+          return null;
+        }
+        if (!res.ok) return res.text().then((t) => { throw new Error(t); });
+        return res.json();
+      })
+      .then((data) => { if (data) console.log("Row added to sheet"); })
+      .catch((err) => showError("Could not save to the sheet: " + err.message));
+    }
+
+    function saveEmail(email) {
+      if (!sheet) {
+        showError("Choose a Google Sheet before scanning.");
+        return;
+      }
+      withToken(() => appendRow(email, false));
+    }
+
+    // --- Scanner ---
+
     function onScanSuccess(decodedText) {
-      if (!scanSuccessful) {
-        scanSuccessful = true;
+      if (scanSuccessful) return;
+      scanSuccessful = true;
 
-        // Hide the QR reader and show success message and retry button
-        document.getElementById("qr-reader").style.display = "none";
-        document.getElementById("capture-message").style.display = "block";
-        document.getElementById("retry-button").style.display = "block";
+      $("qr-reader").style.display = "none";
+      $("capture-message").style.display = "block";
+      $("retry-button").style.display = "block";
 
-        // Send email to Google Sheets
-        fetch(scriptURL, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({ email: decodedText })
-        })
-        .then(response => console.log("Email added to Google Sheets"))
-        .catch(error => console.error("Error!", error.message));
+      saveEmail(decodedText);
 
-        // Stop the QR scanner after capture
-        qrCodeScanner.stop().then(() => {
-          console.log("QR scanner stopped after successful capture.");
-        }).catch(error => console.error("Error stopping QR scanner:", error));
-      }
+      qrCodeScanner.stop().catch((e) => console.error("Error stopping scanner:", e));
     }
 
-    function onScanError(errorMessage) {
-      if (!scanSuccessful) {
-        console.log("QR Code scan error:", errorMessage);
-      }
-    }
+    function onScanError() { /* fires constantly between frames; ignore */ }
 
     function startScanner() {
       scanSuccessful = false;
-      document.getElementById("capture-message").style.display = "none";
-      document.getElementById("retry-button").style.display = "none";
-      document.getElementById("qr-reader").style.display = "block";
+      $("capture-message").style.display = "none";
+      $("retry-button").style.display = "none";
+      $("qr-reader").style.display = "block";
 
-      // Start the QR Code scanner
       qrCodeScanner = new Html5Qrcode("qr-reader");
       qrCodeScanner.start(
         { facingMode: "environment" },
         { fps: 10, qrbox: { width: 250, height: 250 } },
         onScanSuccess,
         onScanError
-      ).catch(error => console.error("Failed to start QR scanner:", error));
+      ).catch((error) => showError("Failed to start the camera: " + error));
     }
 
-    // Initialize scanner on page load
-    window.onload = startScanner;
+    $("choose-button").addEventListener("click", openPicker);
+    $("retry-button").addEventListener("click", startScanner);
+
+    renderSheet();
+    window.addEventListener("load", startScanner);
   </script>
 </body>
 </html>

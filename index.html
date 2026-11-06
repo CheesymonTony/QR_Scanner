@@ -18,7 +18,6 @@
       margin: 0 auto;
     }
     #qr-reader { width: 100%; max-width: 300px; margin: 20px 0; }
-    #capture-message { font-size: 1.2em; color: green; margin-top: 15px; }
     button { padding: 10px 20px; font-size: 1em; margin-top: 12px; }
     #sheet-bar {
       width: 100%;
@@ -30,7 +29,22 @@
     }
     #sheet-name { font-weight: bold; }
     .muted { color: #666; font-size: 0.9em; }
-    #error { color: #b00; margin-top: 12px; }
+    #status {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      text-align: center;
+      font-size: 1.1em;
+      display: none;
+    }
+    #status.saving { display: block; background: #eee; color: #333; }
+    #status.saved  { display: block; background: #e6f4ea; color: #137333; font-weight: bold; }
+    #status.failed { display: block; background: #fce8e6; color: #b00; font-weight: bold; }
+    #scanned { font-family: monospace; font-size: 0.95em; word-break: break-all; }
+    #reconnect-button { display: none; }
+    #error { color: #b00; margin-top: 12px; text-align: center; }
   </style>
 </head>
 <body>
@@ -43,16 +57,18 @@
   </div>
 
   <div id="qr-reader"></div>
-  <div id="capture-message" style="display: none;">Capture Successful!</div>
+
+  <div id="status"></div>
   <button id="retry-button" style="display: none;">Capture Another</button>
+  <button id="reconnect-button">Reconnect to Google and retry</button>
   <div id="error"></div>
 
   <script>
-    // ---- Fill these in from your Google Cloud project ----
+    // ---- From your Google Cloud project ----
     const CLIENT_ID = "1095889947363-9sn265jhc224v6qicpfahfdh160018j0.apps.googleusercontent.com";
     const API_KEY = "AIzaSyBgO288xQACOzklSQ3Z7OZ9y0xRMqIP9qE";
     const APP_ID = "1095889947363"; // Cloud project number
-    // ------------------------------------------------------
+    // ----------------------------------------
 
     const SCOPE = "https://www.googleapis.com/auth/drive.file";
 
@@ -60,19 +76,41 @@
     let accessToken = null;
     let pickerReady = false;
     let qrCodeScanner = null;
-    let scanSuccessful = false;
-
-    let sheet = JSON.parse(localStorage.getItem("qrSheet") || "null");
+    let scanHandled = false;
+    let flushing = false;
 
     const $ = (id) => document.getElementById(id);
 
-    function showError(msg) {
-      $("error").textContent = msg || "";
+    // Anything scanned goes here FIRST, and is only removed once the Sheets
+    // API confirms the write. Nothing is lost if auth or the network fails.
+    let queue = JSON.parse(localStorage.getItem("qrQueue") || "[]");
+    let sheet = JSON.parse(localStorage.getItem("qrSheet") || "null");
+
+    const saveQueue = () => localStorage.setItem("qrQueue", JSON.stringify(queue));
+
+    function showError(msg) { $("error").textContent = msg || ""; }
+
+    function setStatus(kind, html) {
+      const el = $("status");
+      el.className = kind || "";
+      el.innerHTML = html || "";
     }
 
     function renderSheet() {
       $("sheet-name").textContent = sheet ? sheet.name : "no sheet chosen yet";
       $("choose-button").textContent = sheet ? "Change Sheet" : "Choose Google Sheet";
+    }
+
+    function needsReconnect(show) {
+      $("reconnect-button").style.display = show ? "block" : "none";
+    }
+
+    function queueStatus() {
+      if (queue.length === 0) return;
+      setStatus("failed",
+        "NOT saved yet — " + queue.length + " scan" + (queue.length === 1 ? "" : "s") +
+        " waiting.<br>Tap Reconnect below, then they'll be sent.");
+      needsReconnect(true);
     }
 
     // --- Google auth ---
@@ -85,38 +123,46 @@
         callback: (resp) => {
           if (resp.error) {
             showError("Sign-in failed: " + resp.error);
+            queueStatus();
             return;
           }
+          showError("");
           accessToken = resp.access_token;
-          if (pendingAction) {
-            const action = pendingAction;
-            pendingAction = null;
-            action();
-          }
+          needsReconnect(false);
+          const action = pendingAction;
+          pendingAction = null;
+          if (action) action(); else flush();
         }
       });
     }
 
     let pendingAction = null;
 
-    function withToken(action) {
+    // Silent token request. Safari often blocks the popup this falls back to
+    // when it isn't triggered by a tap, so callers must cope with no token.
+    function requestTokenSilently(action) {
+      initTokenClient();
+      if (!tokenClient) return false;
+      pendingAction = action || null;
+      try {
+        tokenClient.requestAccessToken({ prompt: "" });
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // Called from a real tap, so the popup is allowed through.
+    function reconnect() {
+      showError("");
       initTokenClient();
       if (!tokenClient) {
         showError("Google sign-in is still loading. Try again in a moment.");
         return;
       }
-      if (accessToken) {
-        action();
-      } else {
-        pendingAction = action;
-        tokenClient.requestAccessToken({ prompt: "" });
-      }
-    }
-
-    function forceReauth(action) {
       accessToken = null;
-      pendingAction = action;
-      initTokenClient();
+      setStatus("saving", "Reconnecting…");
+      pendingAction = null;
       tokenClient.requestAccessToken({ prompt: "consent" });
     }
 
@@ -131,88 +177,139 @@
       gapi.load("picker", () => { pickerReady = true; cb(); });
     }
 
-    function openPicker() {
-      showError("");
-      withToken(() => loadPicker(() => {
-        const view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS)
-          .setIncludeFolders(true)
-          .setSelectFolderEnabled(false);
+    function buildPicker() {
+      const view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(false);
 
-        const picker = new google.picker.PickerBuilder()
-          .setOAuthToken(accessToken)
-          .setDeveloperKey(API_KEY)
-          .setAppId(APP_ID)
-          .addView(view)
-          .setCallback((data) => {
-            if (data.action !== google.picker.Action.PICKED) return;
-            const doc = data.docs[0];
-            sheet = { id: doc.id, name: doc.name };
-            localStorage.setItem("qrSheet", JSON.stringify(sheet));
-            renderSheet();
-          })
-          .build();
-
-        picker.setVisible(true);
-      }));
+      return new google.picker.PickerBuilder()
+        .setOAuthToken(accessToken)
+        .setDeveloperKey(API_KEY)
+        .setAppId(APP_ID)
+        .addView(view)
+        .setCallback((data) => {
+          if (data.action !== google.picker.Action.PICKED) return;
+          const doc = data.docs[0];
+          sheet = { id: doc.id, name: doc.name };
+          localStorage.setItem("qrSheet", JSON.stringify(sheet));
+          renderSheet();
+          flush();
+        })
+        .build();
     }
 
-    // --- Writing a row ---
+    function openPicker() {
+      showError("");
+      const open = () => loadPicker(() => buildPicker().setVisible(true));
+      if (accessToken) {
+        open();
+      } else {
+        // This runs from a tap, so a visible sign-in prompt is fine here.
+        initTokenClient();
+        if (!tokenClient) {
+          showError("Google sign-in is still loading. Try again in a moment.");
+          return;
+        }
+        pendingAction = open;
+        tokenClient.requestAccessToken({ prompt: "" });
+      }
+    }
 
-    function appendRow(email, isRetry) {
+    // --- Writing rows ---
+
+    function appendRow(email) {
       const url = "https://sheets.googleapis.com/v4/spreadsheets/" +
         encodeURIComponent(sheet.id) +
         "/values/A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS";
 
-      fetch(url, {
+      return fetch(url, {
         method: "POST",
         headers: {
           "Authorization": "Bearer " + accessToken,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({ values: [[new Date().toISOString(), email]] })
-      })
-      .then((res) => {
-        if (res.status === 401 && !isRetry) {
-          forceReauth(() => appendRow(email, true));
-          return null;
+      }).then((res) => {
+        if (res.status === 401 || res.status === 403) {
+          const err = new Error("auth");
+          err.auth = true;
+          throw err;
         }
         if (!res.ok) return res.text().then((t) => { throw new Error(t); });
         return res.json();
-      })
-      .then((data) => { if (data) console.log("Row added to sheet"); })
-      .catch((err) => showError("Could not save to the sheet: " + err.message));
+      });
     }
 
-    function saveEmail(email) {
+    // Sends queued scans one at a time; each is dropped only once written.
+    function flush() {
+      if (flushing) return;
+      if (queue.length === 0) { needsReconnect(false); return; }
       if (!sheet) {
-        showError("Choose a Google Sheet before scanning.");
+        setStatus("failed", "Choose a Google Sheet — " + queue.length + " scan(s) waiting.");
         return;
       }
-      withToken(() => appendRow(email, false));
+      if (!accessToken) {
+        if (!requestTokenSilently(flush)) queueStatus();
+        return;
+      }
+
+      flushing = true;
+      setStatus("saving", "Saving " + queue.length + " scan(s)…");
+
+      const step = () => {
+        if (queue.length === 0) {
+          flushing = false;
+          needsReconnect(false);
+          setStatus("saved", "Saved to " + sheet.name + "<div id=\"scanned\"></div>");
+          return;
+        }
+        const email = queue[0];
+        appendRow(email)
+          .then(() => {
+            queue.shift();
+            saveQueue();
+            step();
+          })
+          .catch((err) => {
+            flushing = false;
+            if (err.auth) {
+              accessToken = null;
+              if (!requestTokenSilently(flush)) queueStatus();
+            } else {
+              setStatus("failed", "Could not save — " + queue.length +
+                " scan(s) still waiting. They'll be sent when this works again.");
+              showError(err.message);
+              needsReconnect(true);
+            }
+          });
+      };
+      step();
     }
 
     // --- Scanner ---
 
     function onScanSuccess(decodedText) {
-      if (scanSuccessful) return;
-      scanSuccessful = true;
+      if (scanHandled) return;
+      scanHandled = true;
 
       $("qr-reader").style.display = "none";
-      $("capture-message").style.display = "block";
       $("retry-button").style.display = "block";
 
-      saveEmail(decodedText);
+      queue.push(decodedText);
+      saveQueue();
+      setStatus("saving", "Scanned " + decodedText + " — saving…");
 
       qrCodeScanner.stop().catch((e) => console.error("Error stopping scanner:", e));
+      flush();
     }
 
     function onScanError() { /* fires constantly between frames; ignore */ }
 
     function startScanner() {
-      scanSuccessful = false;
-      $("capture-message").style.display = "none";
+      scanHandled = false;
       $("retry-button").style.display = "none";
       $("qr-reader").style.display = "block";
+      if (queue.length === 0) setStatus("", "");
 
       qrCodeScanner = new Html5Qrcode("qr-reader");
       qrCodeScanner.start(
@@ -225,9 +322,14 @@
 
     $("choose-button").addEventListener("click", openPicker);
     $("retry-button").addEventListener("click", startScanner);
+    $("reconnect-button").addEventListener("click", reconnect);
 
     renderSheet();
-    window.addEventListener("load", startScanner);
+    queueStatus();
+    window.addEventListener("load", () => {
+      startScanner();
+      if (queue.length > 0 || sheet) requestTokenSilently(flush);
+    });
   </script>
 </body>
 </html>
